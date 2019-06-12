@@ -2,3 +2,5 @@
 build
 dist
 git_timestamp.egg-info
+git-timestamp-*.tar.gz
+deb_dist
