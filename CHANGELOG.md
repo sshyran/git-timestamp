@@ -4,11 +4,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
-# 0.9.4+ - [Unreleased]
+
+# 0.9.7 - 2019-09-01
 ## Added
+- `--quiet` option
 
 ## Fixed
+- Handle `--server http://localhost:1234`
+- Tag and branch name validity checks match `zeitgitterd`'s
+
+## Changed
+- `ZEITGITTER_FAKE_TIME` now used for testing
+- Support optional boolean arguments: If the option (e.g., `--enable` or
+  `--quiet`) is specified without an argument, it defaults to true; if the
+  option is not specified, it defaults to false. This allows changing an
+  option on the command line which has been specified differently in
+  `git config`. Having a `--no-…` counterpart would not allow consistent
+  overriding of `git config` options on the command line in both directions.
+  The downside: Having such an option last before the positional arguments
+  requires explicit specification of `true` to avoid parsing the positional
+  argument as the truth value.
+
+
+# 0.9.6 - 2019-08-14
+## Added
+- `--version` option
+- Support for
+  [inclusion in other packages](./README.md#inclusion-in-other-packages)
+  by providing default-enabled or default-disabled operation.
+
+## Fixed
+
+## Changed
+- Changed client license to MIT
+- Use [`pygit2` information for global `.gitconfig` path
+  determination](https://github.com/libgit2/pygit2/issues/915#issuecomment-503300141)
+- Avoid picking `www` from servername when auto-naming the branch
+
+
+# 0.9.5 - 2019-06-16
+## Added
+- Mention Haber/Stornetta in documentation
+
+## Fixed
+- No more exception on initial key import
 - Detect duplicate timestamp on timestamp branch root as well
+- Fixed path for `make install`
+- Do not abort if `~/.gitconfig` does not exist when using a timestamper
+  for the first time (working around a `pygit2` problem)
 
 ## Changed
 
@@ -88,6 +131,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - Made some error messages more consistent
 - `--tag` overrides `--branch`. This allows to store a default branch in
   `git config`, yet timestamp a tag when necessary.
+
 
 # 0.9.0 - 2019-04-04
 Initial public release

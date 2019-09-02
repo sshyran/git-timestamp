@@ -1,11 +1,12 @@
 PREFIX	= /usr/local
 BINDIR	= ${PREFIX}/bin
+INSTALL	= install
 
 all:
 	echo "Use make install, apt, or test"
 
 install:
-	${INSTALL} --backup --compare igitt_client/timestamp.py ${BINDIR}/git-timestamp
+	${INSTALL} --backup --compare git_timestamp/timestamp.py ${BINDIR}/git-timestamp
 
 apt dependencies:
 	apt install python3-gnupg python3-pygit2 python3-requests

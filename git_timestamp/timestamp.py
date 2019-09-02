@@ -24,6 +24,7 @@
 # This has not been modularized for ease of installation
 
 import argparse
+import distutils.util
 import os
 import re
 import sys
@@ -31,11 +32,11 @@ import tempfile
 import time
 import traceback
 
-import gnupg
+import gnupg # Provided e.g. by `pip install python-gnupg` (try with `pip2`/`pip3` if `pip` does not work)
 import pygit2 as git
 import requests
 
-VERSION = '0.9.4+'
+VERSION = '0.9.7'
 
 
 class GitArgumentParser(argparse.ArgumentParser):
@@ -53,14 +54,14 @@ class GitArgumentParser(argparse.ArgumentParser):
             gitopt = kwargs['gitopt']
             try:
                 val = repo.config[gitopt]
-                kwargs['help'] += "Defaults to '%s' from git config '%s'" % (val, gitopt)
+                kwargs['help'] += "Defaults to '%s' from `git config %s`" % (val, gitopt)
                 if 'default' in kwargs:
                     kwargs['help'] += "; fallback default: '%s'" % kwargs['default']
                 kwargs['default'] = val
                 if 'required' in kwargs:
                     del kwargs['required']
             except KeyError:
-                kwargs['help'] += "Can be set by git config '%s'" % gitopt
+                kwargs['help'] += "Can be set by `git config %s`" % gitopt
                 if 'default' in kwargs:
                     kwargs['help'] += "; fallback default: '%s'" % kwargs['default']
             del kwargs['gitopt']
@@ -79,40 +80,80 @@ def asciibytes(data):
 
 
 def timestamp_branch_name(fields):
-    """Return the first field not being 'igitt', '*stamp*', 'zeitgitter'"""
-    for i in fields:
-        if i != '' and i != 'igitt' and i != 'zeitgitter' and 'stamp' not in i:
+    """Return the first field except 'www', 'igitt', '*stamp*', 'zeitgitter'
+    'localhost:8080' is returned as 'localhost-8080'"""
+    for f in fields:
+        i = f.replace(':', '-')
+        if (i != '' and i != 'www' and i != 'igitt' and i != 'zeitgitter'
+                and 'stamp' not in i and valid_name(i)):
             return i + '-timestamps'
     return 'zeitgitter-timestamps'
+
+
+class DefaultTrueIfPresent(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if values is None:
+            values = True
+        else:
+            try:
+                values = bool(distutils.util.strtobool(values))
+            except ValueError:
+                raise argparse.ArgumentError(self, "Requires boolean value")
+        setattr(namespace, self.dest, values)
 
 
 def get_args():
     """Parse command line and git config parameters"""
     parser = GitArgumentParser(
         add_help=False,
-        description="Interface to Zeitgitter, the Independent GIT Timestampers.",
-        epilog="""--tag takes precedence over --branch.
-            When in doubt, use --tag for single/rare timestamping,
-            and --branch for reqular timestamping.""")
-    parser.add('-h', '--help',
+        description="""Interface to Zeitgitter, the network of
+                    independent GIT timestampers.""",
+        epilog="""`--tag` takes precedence over `--branch`.
+            When in doubt, use `--tag` for single/rare timestamping,
+            and `--branch` for reqular timestamping.
+            `bool` values can be specified as true/false/yes/no/0/1.
+            Arguments with optional `bool` options default to true if
+            the argument is present, false if absent.""")
+    parser.add('--help', '-h',
                action='help',
                help="""Show this help message and exit. When called as
-             'git timestamp' (space, not dash), use '-h', as '--help' is 
-             interpreted by 'git'.""")
+             'git timestamp' (space, not dash), use `-h`, as `--help` is 
+             captured by `git` itself.""")
+    parser.add('--version',
+               action='version',
+               version="git timestamp v%s" % VERSION,
+               help="Show program's version number and exit")
     parser.add('--tag',
                help="Create a new timestamped tag named TAG")
     parser.add('--branch',
                gitopt='timestamp.branch',
-               help=("""Create a timestamped commit in branch BRANCH,
+               help="""Create a timestamped commit in branch BRANCH,
                    with identical contents as the specified commit.
-                   Default name derived from servername plus '-timestamps'"""))
+                   Default name derived from servername plus `-timestamps`""")
     parser.add('--server',
                default='https://gitta.zeitgitter.net',
                gitopt='timestamp.server',
-               help="IGITT server to obtain timestamp from")
+               help="Zeitgitter server to obtain timestamp from")
     parser.add('--gnupg-home',
                gitopt='timestamp.gnupg-home',
                help="Where to store timestamper public keys")
+    parser.add('--enable',
+               nargs='?',
+               action=DefaultTrueIfPresent,
+               metavar='bool',
+               gitopt='timestamp.enable',
+               help="""Forcibly enable/disable timestamping operations; mainly
+                   for use in `git config`""")
+    parser.add('--require-enable',
+               action='store_true',
+               help="""Disable operation unless `git config timestamp.enable`
+                   has explicitely been set to true""")
+    parser.add('--quiet', '-q',
+               nargs='?',
+               action=DefaultTrueIfPresent,
+               metavar='bool',
+               gitopt='timestamp.quiet',
+               help="Only output error messages")
     parser.add('commit',
                nargs='?',
                default='HEAD',
@@ -120,6 +161,10 @@ def get_args():
                gitopt='timestamp.commit-branch',
                help="Which commit to timestamp")
     arg = parser.parse_args()
+    if arg.enable == False:
+        sys.exit("Timestamping explicitely disabled")
+    if arg.require_enable and arg.enable != True:
+        sys.exit("Timestamping not explicitely enabled")
     if arg.tag is None and arg.branch is None:
         # Automatically derive branch name
         # Split on '.' or '/'
@@ -137,7 +182,7 @@ def ensure_gnupg_ready_for_scan_keys():
     gpg.list_keys(keys='arbitrary.query@creates.keybox')
 
 
-def validate_key_and_import(text):
+def validate_key_and_import(text, args):
     """Is this a single key? Then import it"""
     ensure_gnupg_ready_for_scan_keys()
     f = tempfile.NamedTemporaryFile(mode='w', delete=False)
@@ -148,48 +193,90 @@ def validate_key_and_import(text):
     if len(info) != 1 or info[0]['type'] != 'pub' or len(info[0]['uids']) == 0:
         sys.exit("Invalid key returned")
     res = gpg.import_keys(text)
-    if res.count == 1:
+    if res.count == 1 and not args.quiet:
         print("Imported new key %s: %s" %
               (info[0]['keyid'], info[0]['uids'][0]))
     return (info[0]['keyid'], info[0]['uids'][0])
 
 
-def get_keyid(server):
+def get_global_config_if_possible():
+    """Try to return global git configuration, which normally lies in
+    `~/.gitconfig`.
+
+    However (https://github.com/libgit2/pygit2/issues/915),
+    `get_global_config()` fails, if the underlying file does not
+    exist yet. (The [paths may be
+    determined](https://github.com/libgit2/pygit2/issues/915#issuecomment-503300141)
+    by
+    `pygit2.option(pygit2.GIT_OPT_GET_SEARCH_PATH, pygit2.GIT_CONFIG_LEVEL_GLOBAL)` 
+    and similar.)
+
+    Therefore, we do not simply `touch ~/.gitconfig` first, but
+    1. try `get_global_config()` (raises `IOError` in Python2, `OSError`
+       in Python3),
+    2. try `get_xdg_config()` (relying on the alternative global location
+       `$XDG_CONFIG_HOME/git/config`, typically aka `~/.config/git/config`
+       (this might fail due to the file not being there either (`OSError`,
+       `IOError`), or because the installed `libgit2`/`pygit2` is too old
+       (`AttributeError`; function added in 2014 only),
+    3. `touch ~/.gitconfig` and retry `get_global_config()`, and, as fallback
+    4. use the repo's `.git/config`, which should always be there."""
+    try:
+        return git.Config.get_global_config()           # 1
+    except (IOError, OSError):
+        try:
+            return git.Config.get_xdg_config()          # 2
+        except (IOError, OSError, AttributeError):
+            try:
+                sys.stderr.write("INFO: Creating global .gitconfig\n")
+                with open(os.path.join(
+                        git.option(git.GIT_OPT_GET_SEARCH_PATH, git.GIT_CONFIG_LEVEL_GLOBAL),
+                        '.gitconfig'), 'a'):
+                    pass
+                return git.Config.get_global_config()   # 3
+            except (IOError, OSError):
+                sys.stderr.write("INFO: Cannot record key ID in global config,"
+                        " falling back to repo config\n")
+                return repo.config                      # 4
+    # Not reached
+
+
+def get_keyid(args):
     """Return keyid/fullname from git config, if known.
     Otherwise, request it from server and remember TOFU-style"""
-    key = server
-    if key.startswith('http://'):
-        key = key[7:]
-    elif key.startswith('https://'):
-        key = key[8:]
-    while key.endswith('/'):
-        key = key[0:-1]
+    keyname = args.server
+    if keyname.startswith('http://'):
+        keyname = keyname[7:]
+    elif keyname.startswith('https://'):
+        keyname = keyname[8:]
+    while keyname.endswith('/'):
+        keyname = keyname[0:-1]
     # Replace everything outside 0-9a-z with '-':
-    key = ''.join(map(lambda x:
-                      x if (x >= '0' and x <= '9') or (x >= 'a' and x <= 'z') else '-', key))
+    keyname = ''.join(map(lambda x:
+                      x if (x >= '0' and x <= '9') or (x >= 'a' and x <= 'z') else '-', keyname))
     try:
-        keyid = repo.config['timestamper.%s.keyid' % key]
+        keyid = repo.config['timestamper.%s.keyid' % keyname]
         keys = gpg.list_keys(keys=keyid)
         if len(keys) == 0:
             sys.stderr.write("WARNING: Key %s missing in keyring;"
                              " refetching timestamper key\n" % keyid)
             raise KeyError("GPG Key not found")  # Evil hack
-        return (keyid, repo.config['timestamper.%s.name' % key])
+        return (keyid, repo.config['timestamper.%s.name' % keyname])
     except KeyError:
         # Obtain key in TOFU fashion and remember keyid
-        r = requests.get(server, params={'request': 'get-public-key-v1'},
+        r = requests.get(args.server, params={'request': 'get-public-key-v1'},
                          timeout=30)
-        quit_if_http_error(server, r)
-        (keyid, name) = validate_key_and_import(r.text)
-        gcfg = git.Config.get_global_config()
-        gcfg['timestamper.%s.keyid' % key] = keyid
-        gcfg['timestamper.%s.name' % key] = name
+        quit_if_http_error(args.server, r)
+        (keyid, name) = validate_key_and_import(r.text, args)
+        gcfg = get_global_config_if_possible()
+        gcfg['timestamper.%s.keyid' % keyname] = keyid
+        gcfg['timestamper.%s.name' % keyname] = name
         return (keyid, name)
 
 
 def sig_time():
     """Current time, unless in test mode"""
-    return int(os.getenv('IGITT_FAKE_TIME', time.time()))
+    return int(os.getenv('ZEITGITTER_FAKE_TIME', time.time()))
 
 
 def validate_timestamp(stamp):
@@ -282,8 +369,7 @@ def quit_if_http_error(server, r):
 
 def timestamp_tag(repo, commit, keyid, name, args):
     """Obtain and add a signed tag"""
-    # pygit2.reference_is_valid_name() is too new
-    if not re.match('^[-._a-zA-Z0-9]+$', args.tag) or ".." in args.tag:
+    if not valid_name(args.tag):
         sys.exit("Tag name '%s' is not valid for timestamping" % args.tag)
     try:
         r = repo.lookup_reference('refs/tags/' + args.tag)
@@ -338,13 +424,19 @@ author %s ''' % (data['commit'], name)
     signature = signature.replace('\n ', '\n')
     verify_signature_and_timestamp(keyid, signed, signature, args)
 
+def valid_name(name):
+    """Can be sanely, universally stored as file name.
+
+    pygit2.reference_is_valid_name() would be better, but is too new
+    [(2018-10-17)](https://github.com/libgit2/pygit2/commit/1a389cc0ba360f1fd53f1352da41c6a2fae92a66)
+    to rely on being available."""
+    return (re.match('^[_a-z][-._a-z0-9]{,99}$', name, re.IGNORECASE)
+            and '..' not in name and not '\n' in name)
 
 def timestamp_branch(repo, commit, keyid, name, args):
     """Obtain and add branch commit; create/update branch head"""
-    # pygit2.reference_is_valid_name() is too new
-    if (not re.match('^[-._a-zA-Z0-9]{1,100}$', args.branch)
-            or ".." in args.branch):
-        sys.exit("Branch name %s is not valid for timestamping" % args.tag)
+    if not valid_name(args.branch):
+        sys.exit("Branch name %s is not valid for timestamping" % args.branch)
     branch_head = None
     data = {
         'request': 'stamp-branch-v1',
@@ -390,8 +482,12 @@ def main():
         gpg = gnupg.GPG(gnupghome=args.gnupg_home)
     except TypeError:
         traceback.print_exc()
-        sys.exit("*** 'git timestamp' needs 'python-gnupg' module from PyPI, not 'gnupg'")
-    (keyid, name) = get_keyid(args.server)
+        sys.exit("*** `git timestamp` needs `python-gnupg`"
+                " module from PyPI, not `gnupg`\n"
+                "    Possible remedy: `pip uninstall gnupg;"
+                " pip install python-gnupg`\n"
+                "    (try `pip2`/`pip3` if it does not work with `pip`)")
+    (keyid, name) = get_keyid(args)
     if args.tag:
         timestamp_tag(repo, commit, keyid, name, args)
     else:
